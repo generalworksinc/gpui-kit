@@ -11,18 +11,16 @@ use crate::{ActiveTheme, StyledExt};
 pub struct Kbd {
     style: StyleRefinement,
     stroke: Keystroke,
+    /// The keystrokes that follow `stroke` in a multi-stroke binding, such as
+    /// `cmd-k cmd-o`.
+    rest: Vec<Keystroke>,
     appearance: bool,
     outline: bool,
 }
 
 impl From<Keystroke> for Kbd {
     fn from(stroke: Keystroke) -> Self {
-        Self {
-            style: StyleRefinement::default(),
-            stroke,
-            appearance: true,
-            outline: false,
-        }
+        Self::new(stroke)
     }
 }
 
@@ -32,6 +30,7 @@ impl Kbd {
         Self {
             style: StyleRefinement::default(),
             stroke,
+            rest: Vec::new(),
             appearance: true,
             outline: false,
         }
@@ -94,8 +93,19 @@ impl Kbd {
     }
 
     fn from_binding(binding: &KeyBinding) -> Option<Self> {
-        let key = binding.keystrokes().first()?;
-        Some(Self::new(key.as_keystroke().clone()))
+        let (first, rest) = binding.keystrokes().split_first()?;
+        let mut kbd = Self::new(first.as_keystroke().clone());
+        kbd.rest = rest.iter().map(|key| key.as_keystroke().clone()).collect();
+        Some(kbd)
+    }
+
+    /// Every keystroke formatted with [`Kbd::format`], separated by spaces.
+    fn text(&self) -> String {
+        std::iter::once(&self.stroke)
+            .chain(&self.rest)
+            .map(Self::format)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Return the Platform specific keybinding string by KeyStroke
@@ -232,13 +242,19 @@ impl Styled for Kbd {
 impl RenderOnce for Kbd {
     fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         if !self.appearance {
-            return Self::format(&self.stroke).into_any_element();
+            return self.text().into_any_element();
         }
 
         div()
             // Lets a test ask whether a given shortcut hint was painted this
             // frame; a no-op outside test-support builds.
-            .debug_selector(|| format!("kbd:{}", self.stroke.unparse()))
+            .debug_selector(|| {
+                let keys = std::iter::once(&self.stroke).chain(&self.rest);
+                format!(
+                    "kbd:{}",
+                    keys.map(Keystroke::unparse).collect::<Vec<_>>().join(" ")
+                )
+            })
             .text_color(cx.theme().muted_foreground)
             .bg(cx.theme().tokens.muted)
             .when(self.outline, |this| {
@@ -256,13 +272,33 @@ impl RenderOnce for Kbd {
             .whitespace_normal()
             .flex_shrink_0()
             .refine_style(&self.style)
-            .child(Self::format(&self.stroke))
+            .child(self.text())
             .into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_multi_stroke_binding() {
+        use super::Kbd;
+        use gpui::{KeyBinding, NoAction};
+
+        let kbd = Kbd::from_binding(&KeyBinding::new("ctrl-k ctrl-o", NoAction, None)).unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(kbd.text(), "⌃K ⌃O");
+        } else {
+            assert_eq!(kbd.text(), "Ctrl+K Ctrl+O");
+        }
+
+        let kbd = Kbd::from_binding(&KeyBinding::new("ctrl-c", NoAction, None)).unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(kbd.text(), "⌃C");
+        } else {
+            assert_eq!(kbd.text(), "Ctrl+C");
+        }
+    }
+
     #[test]
     fn test_format() {
         use super::Kbd;
